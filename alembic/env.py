@@ -17,17 +17,14 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Build Supabase connection string
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+# Use DATABASE_URL from .env directly
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
-    # Extract project reference from URL
-    project_ref = SUPABASE_URL.split("//")[1].split(".")[0]
-    sqlalchemy_url = f"postgresql://postgres:{SUPABASE_SERVICE_ROLE_KEY}@{project_ref}.supabase.co:5432/postgres"
-    config.set_main_option("sqlalchemy.url", sqlalchemy_url)
-else:
-    raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL must be set in .env")
+
+# Pass URL directly via engine, avoiding configparser interpolation issues
+# configparser treats % as special, so we bypass it
 
 # Detect migrations from target_metadata
 target_metadata = None
@@ -35,9 +32,8 @@ target_metadata = None
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=DATABASE_URL,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -50,7 +46,7 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     configuration = config.get_section(config.config_ini_section)
-    configuration["sqlalchemy.url"] = config.get_main_option("sqlalchemy.url")
+    configuration["sqlalchemy.url"] = DATABASE_URL
     
     connectable = engine_from_config(
         configuration,

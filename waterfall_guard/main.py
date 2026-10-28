@@ -21,6 +21,8 @@ from waterfall_guard.engine import HospitalRuleSet, ReconciliationEngine
 from waterfall_guard.integrations.epic_client import EpicClient
 from waterfall_guard.integrations.supabase_writer import SupabaseWriter
 from waterfall_guard.llm.client import DiagnosticLLMClient, ZDRConfig
+from waterfall_guard.matcher import RelationshipMatcher
+from waterfall_guard.successors import SuccessorMatcher
 
 # Env vars a --live run refuses to start without. Checked against `settings`
 # rather than os.environ directly so a .env file is honored the same way
@@ -94,8 +96,8 @@ RAW_CLAIMS: List[Dict[str, Any]] = EpicClient().fetch_claims()
 
 
 def run_simulation() -> Dict[str, Any]:
-    """Run ingestion -> de-identification -> the engine and return the
-    ZDR-safe deadlock diagnosis payload."""
+    """Run ingestion -> de-identification -> relationship matching -> 
+    the engine and return the ZDR-safe deadlock diagnosis payload."""
     deidentifier = Deidentifier()
     rules = HospitalRuleSet.from_config(RULES_CONFIG)
     engine = ReconciliationEngine(rules)
@@ -103,8 +105,62 @@ def run_simulation() -> Dict[str, Any]:
     deidentified_records = deidentifier.deidentify_batch(RAW_CLAIMS)
     engine_records = [record.as_dict() for record in deidentified_records]
 
+    # E3: Extract relationships from raw claims
+    matcher = RelationshipMatcher()
+    relationships = matcher.extract_batch(RAW_CLAIMS)
+
     findings = engine.diagnose_batch(engine_records)
-    return engine.build_zdr_payload(findings)
+    
+    # E4: Detect missing successors
+    successor_matcher = SuccessorMatcher()
+    successor_findings = []
+    for record in engine_records:
+        # Convert record to claim-like dict for successor detection
+        # Note: field names must match SuccessorMatcher expectations
+        claim = {
+            "token_id": record.get("token_id"),
+            "status": record.get("status") or record.get("claim_status") or record.get("waterfall_stage"),
+            "last_status_change_at": record.get("last_status_change_at") or record.get("created_date"),
+            "acknowledgment_date": record.get("acknowledgment_date"),
+            "filing_deadline": record.get("filing_deadline"),
+        }
+        missing = successor_matcher.check_missing_successors(claim)
+        successor_findings.extend(missing)
+
+    payload = engine.build_zdr_payload(findings)
+    
+    # Include successor findings in the payload
+    payload["successor_findings"] = [
+        {
+            "token_id": f.token_id,
+            "finding_type": f.finding_type.value,
+            "reason": f.reason,
+        }
+        for f in successor_findings
+    ]
+    
+    # Store relationships in payload for persistence
+    payload["relationships"] = [
+        {
+            "from_type": r.from_type,
+            "from_id": r.from_id,
+            "to_type": r.to_type,
+            "to_id": r.to_id,
+            "state": r.state.value,
+            "evidence": [
+                {
+                    "evidence_type": e.evidence_type,
+                    "evidence_value": e.evidence_value,
+                    "source": e.source,
+                    "confidence_score": e.confidence_score,
+                }
+                for e in r.evidence
+            ],
+        }
+        for r in relationships
+    ]
+    
+    return payload
 
 
 def _offline_demo_transport(prompt: Dict[str, str], zdr_config: ZDRConfig) -> str:
@@ -150,9 +206,9 @@ def run_diagnostic_pipeline(
     llm_client: Optional[DiagnosticLLMClient] = None,
     supabase_writer: Optional[SupabaseWriter] = None,
 ) -> Dict[str, Any]:
-    """Runs the full pipeline: Epic ingestion -> deident -> engine -> LLM
-    diagnosis -> (optional) Supabase persistence of the de-identified
-    diagnostic payload.
+    """Runs the full pipeline: Epic ingestion -> deident -> relationship extraction ->
+    engine -> successor detection -> LLM diagnosis -> (optional) Supabase persistence
+    of the de-identified diagnostic payload and relationships.
 
     Supabase persistence is best-effort: `SupabaseWriter` soft-fails (never
     raises) whenever credentials are absent or the project is unreachable,
@@ -165,6 +221,13 @@ def run_diagnostic_pipeline(
 
     writer = supabase_writer if supabase_writer is not None else SupabaseWriter()
     write_result = writer.write_diagnostic_payload(payload)
+    
+    # E3: Persist relationships (requires tenant_id from auth context)
+    # In production, tenant_id comes from authenticated session
+    # For now, use a default demo tenant_id
+    tenant_id = "demo_tenant"
+    relationships = payload.get("relationships", [])
+    write_relationships_result = writer.write_relationships(tenant_id, relationships)
 
     return {
         "diagnostic_payload": payload,
@@ -173,6 +236,8 @@ def run_diagnostic_pipeline(
         "diagnosis": result.parsed,
         "supabase_write_ok": write_result.ok,
         "supabase_write_error": write_result.error,
+        "relationships_written": write_relationships_result.ok,
+        "relationships_error": write_relationships_result.error,
     }
 
 

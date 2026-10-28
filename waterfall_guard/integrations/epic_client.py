@@ -248,4 +248,29 @@ class EpicClient:
             claim["CABOODLE_STAGE_DRIFT"] = bool(
                 snapshot is not None and snapshot["WATERFALL_STAGE"] != claim["WATERFALL_STAGE"]
             )
+            
+            # E3/E4: Add mock relationship fields for demo mode
+            # In production, these come from real Epic Clarity extract
+            # Note: Use HMAC-safe identifiers to avoid PHI in relationships
+            import hashlib
+            csn_hash = hashlib.sha256(claim["PAT_ENC_CSN_ID"].encode()).hexdigest()[:12]
+            claim["ENCOUNTER_ID"] = f"ENC_{csn_hash}"
+            claim["CHARGE_IDS"] = [f"CHG_{csn_hash}_1", f"CHG_{csn_hash}_2"]
+            
+            # E4: Add successor detection fields
+            # Map waterfall stages to claim statuses for E4 detection
+            waterfall_stage = claim.get("WATERFALL_STAGE", "submitted").lower()
+            claim_status_map = {
+                "submitted": "submitted",
+                "claim_edit": "submitted",
+                "follow_up": "acknowledged",  # Claim has been acknowledged but not yet paid
+                "account": "in_adjudication",  # Under account review / in adjudication
+            }
+            claim["STATUS"] = claim_status_map.get(waterfall_stage, "submitted")
+            claim["LAST_STATUS_CHANGE_AT"] = "2026-10-18T12:00:00Z"  # 10 days ago (old enough to trigger E4 detection)
+            claim["ACKNOWLEDGMENT_DATE"] = None
+            claim["ACK_ID"] = None
+            claim["REMITTANCE_ID"] = None
+            claim["FILING_DEADLINE"] = "2026-11-27T23:59:59Z"  # 30 days from now
+            
         return claims
