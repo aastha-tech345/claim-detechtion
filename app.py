@@ -20,6 +20,13 @@ from waterfall_guard.integrations.fhir_writeback_client import (
     ResolutionUpdate,
     TenantEpicConfig,
 )
+from waterfall_guard.readonly import ReadOnlyGate, AuthorizationError
+from waterfall_guard.audit import get_audit_logger
+from waterfall_guard.auth_session import (
+    SessionValidator,
+    UserRole,
+    AuthenticationError as SessionAuthError,
+)
 
 # ----------------------------------------------------------------------------
 # Page config
@@ -1088,13 +1095,59 @@ with st.form("post_resolution_form"):
         format_func=lambda s: RESOLUTION_LABELS[s],
     )
     resolution_note = st.text_area("Resolution note")
-    resolved_by = st.text_input("Your name / staff ID")
+    # NOTE: "resolved_by" is now derived from authenticated user email, not form input
     post_submitted = st.form_submit_button("Post Resolution to Epic")
 
 if post_submitted:
-    if not epic_task_id.strip() or not resolution_note.strip() or not resolved_by.strip():
-        st.error("Epic FHIR Task ID, resolution note, and staff ID are all required.")
+    if not epic_task_id.strip() or not resolution_note.strip():
+        st.error("Epic FHIR Task ID and resolution note are required.")
     else:
+        # E5: CRITICAL — Derive user identity from AUTHENTICATED SESSION, not form
+        try:
+            # Require authenticated user with SUPERVISOR or ADMIN role for writeback
+            auth_user = SessionValidator.require_authorized_role(UserRole.SUPERVISOR)
+        except SessionAuthError as e:
+            st.error(f"🔒 Cannot perform writeback: {str(e)}")
+            st.stop()
+        
+        # Extract validated context from authenticated user
+        tenant_id = auth_user.tenant_id
+        user_id = auth_user.user_id
+        user_role = auth_user.role
+        user_email = auth_user.email
+        
+        audit_logger = get_audit_logger()
+        
+        # E5: Log writeback attempt with authenticated context
+        audit_logger.log_writeback_attempt(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            user_role=user_role.value,
+            task_id=epic_task_id.strip(),
+            resolution_status=resolution_status.value if hasattr(resolution_status, 'value') else str(resolution_status),
+        )
+        
+        # E5: Confirm authorization (already validated above, but explicit check)
+        try:
+            ReadOnlyGate.authorize_writeback(user_id, user_role.value, tenant_id)
+            audit_logger.log_writeback_authorized(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                user_role=user_role.value,
+                task_id=epic_task_id.strip(),
+            )
+        except AuthorizationError as e:
+            audit_logger.log_writeback_denied(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                user_role=user_role.value,
+                task_id=epic_task_id.strip(),
+                reason=str(e),
+            )
+            st.error(f"🔒 Authorization denied: {e}")
+            st.stop()
+        
+        # E5: Proceed with writeback execution using authenticated context
         try:
             epic_config = TenantEpicConfig.from_client_configuration_row(
                 client_config,
@@ -1102,6 +1155,13 @@ if post_submitted:
                 token_url=st.secrets.get("EPIC_TOKEN_URL", os.environ.get("EPIC_TOKEN_URL", "")),
             )
         except ValueError as exc:
+            audit_logger.log_writeback_failed(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                user_role=user_role.value,
+                task_id=epic_task_id.strip(),
+                error=f"Epic configuration error: {exc}",
+            )
             st.error(f"Epic isn't configured for this tenant yet: {exc}")
         else:
             writeback_client = EpicFHIRWritebackClient(epic_config)
@@ -1110,12 +1170,28 @@ if post_submitted:
                     task_id=epic_task_id.strip(),
                     status=resolution_status,
                     note=resolution_note.strip(),
-                    resolved_by=resolved_by.strip(),
+                    resolved_by=user_email,  # Use authenticated email, not form field
                 )
             )
             if result.ok:
-                st.success(f"Epic Task {result.task_id} updated to '{result.fhir_status}'.")
+                # E5: Log successful writeback
+                audit_logger.log_writeback_succeeded(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    user_role=user_role.value,
+                    task_id=result.task_id,
+                    fhir_status=result.fhir_status,
+                )
+                st.success(f"✅ Epic Task {result.task_id} updated to '{result.fhir_status}' by {user_email}.")
             else:
+                # E5: Log failed writeback
+                audit_logger.log_writeback_failed(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    user_role=user_role.value,
+                    task_id=epic_task_id.strip(),
+                    error=result.error or "Unknown error",
+                )
                 st.error(f"Failed to post resolution to Epic: {result.error}")
 
 st.caption("OpenClaw © 2026 · Diagnostic data sourced from Supabase PostgreSQL pipeline · Data refreshes every 60s when connected live.")

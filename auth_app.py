@@ -12,6 +12,13 @@ load_dotenv()
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from io import BytesIO
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from datetime import datetime
 from waterfall_guard.auth import (
     initialize_session_state,
     signup_user,
@@ -64,6 +71,109 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+
+def generate_csv(df):
+    """Generate CSV file from dataframe."""
+    csv_buffer = BytesIO()
+    df.to_csv(csv_buffer, index=False)
+    csv_buffer.seek(0)
+    return csv_buffer.getvalue()
+
+
+def generate_pdf(df, metrics, user):
+    """Generate PDF report from dataframe and metrics."""
+    pdf_buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        pdf_buffer,
+        pagesize=letter,
+        rightMargin=0.5*inch,
+        leftMargin=0.5*inch,
+        topMargin=0.5*inch,
+        bottomMargin=0.5*inch
+    )
+    
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#1f77b4'),
+        spaceAfter=10,
+        fontName='Helvetica-Bold'
+    )
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor=colors.HexColor('#1f77b4'),
+        spaceAfter=8,
+        fontName='Helvetica-Bold'
+    )
+    
+    elements = []
+    
+    # Title
+    elements.append(Paragraph("🦅 Waterfall Guard - Healthcare Revenue Recovery Report", title_style))
+    elements.append(Spacer(1, 0.2*inch))
+    
+    # Metadata
+    metadata_style = styles['Normal']
+    elements.append(Paragraph(f"<b>Generated:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", metadata_style))
+    elements.append(Paragraph(f"<b>Organization:</b> {user.get('organization_name', 'N/A')}", metadata_style))
+    elements.append(Paragraph(f"<b>Tenant ID:</b> {user.get('tenant_id', 'N/A')}", metadata_style))
+    elements.append(Spacer(1, 0.2*inch))
+    
+    # Key Metrics
+    elements.append(Paragraph("Key Metrics", heading_style))
+    metrics_data = [
+        ["Metric", "Value"],
+        ["Total Claims", f"{metrics['total_claims']:,}"],
+        ["Financial Impact", f"${metrics['total_impact']:,.2f}"],
+        ["Resolved Claims", f"{metrics['resolved_claims']:,}"],
+        ["Recovery Rate", f"{metrics['recovery_rate']:.1f}%"]
+    ]
+    metrics_table = Table(metrics_data, colWidths=[3*inch, 2*inch])
+    metrics_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f77b4')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+    elements.append(metrics_table)
+    elements.append(Spacer(1, 0.3*inch))
+    
+    # Claims Data
+    elements.append(PageBreak())
+    elements.append(Paragraph("Detailed Claims Data", heading_style))
+    elements.append(Spacer(1, 0.1*inch))
+    
+    # Prepare table data
+    table_data = [df.columns.tolist()]
+    for row in df.head(100).values:
+        table_data.append([str(val) for val in row])
+    
+    claims_table = Table(table_data, colWidths=[1.2*inch]*len(df.columns))
+    claims_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f77b4')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
+    ]))
+    elements.append(claims_table)
+    
+    doc.build(elements)
+    pdf_buffer.seek(0)
+    return pdf_buffer.getvalue()
 
 
 def render_login_page():
@@ -253,11 +363,71 @@ def render_dashboard():
             
             st.divider()
             
-            # Recent Claims Table
-            st.subheader("📋 Recent Claims")
+            # Recent Claims Table with Download Options
+            col_title, col_export, col_btn, col_spacer = st.columns([3, 0.8, 0.6, 0.6])
+            
+            with col_title:
+                st.subheader("📋 Recent Claims")
+            
+            with col_export:
+                st.write("")  # Spacer for alignment
+                recent_format = st.selectbox(
+                    "Format",
+                    ["Select Format", "CSV", "PDF"],
+                    key="recent_format_select",
+                    label_visibility="collapsed"
+                )
+            
+            with col_btn:
+                st.write("")  # Spacer for alignment
+                if recent_format != "Select Format":
+                    display_df = df[["token_id", "waterfall_stage", "financial_impact", "created_at"]].head(20)
+                    display_df.columns = ["Claim ID", "Stage", "Financial Impact", "Created"]
+                    
+                    if recent_format == "CSV":
+                        csv_data = generate_csv(display_df)
+                        st.download_button(
+                            label="Download",
+                            data=csv_data,
+                            file_name=f"recent_claims_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv",
+                            key="csv_download_btn",
+                            use_container_width=True
+                        )
+                    elif recent_format == "PDF":
+                        pdf_data = generate_pdf(display_df, {
+                            'total_claims': len(display_df),
+                            'total_impact': pd.to_numeric(display_df["Financial Impact"], errors="coerce").sum(),
+                            'resolved_claims': len(display_df[display_df["Stage"] == "Resolved"]),
+                            'recovery_rate': (len(display_df[display_df["Stage"] == "Resolved"]) / len(display_df) * 100) if len(display_df) > 0 else 0
+                        }, user)
+                        st.download_button(
+                            label="Download",
+                            data=pdf_data,
+                            file_name=f"recent_claims_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                            mime="application/pdf",
+                            key="pdf_download_btn",
+                            use_container_width=True
+                        )
+            
+            with col_spacer:
+                pass
+            
+            # Hide download icon in dataframe toolbar
+            st.markdown("""
+            <style>
+                button[kind="secondary"][data-testid="stDownloadButton"] {
+                    display: none !important;
+                }
+                [data-testid="stDataFrameDownloadButton"] {
+                    display: none !important;
+                }
+            </style>
+            """, unsafe_allow_html=True)
+            
             display_df = df[["token_id", "waterfall_stage", "financial_impact", "created_at"]].head(20)
             display_df.columns = ["Claim ID", "Stage", "Financial Impact", "Created"]
-            st.dataframe(display_df, use_container_width=True)
+            st.dataframe(display_df, use_container_width=True, hide_index=False)
             
         else:
             st.info("📭 No claims data available yet. Please load dummy data first.")

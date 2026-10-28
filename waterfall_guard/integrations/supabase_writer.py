@@ -103,6 +103,48 @@ class SupabaseWriter:
         """Writes an engine ZDR payload's findings as rows. Never raises."""
         return self.write_rows(self._rows_from_zdr_payload(zdr_payload))
 
+    def write_relationships(
+        self,
+        tenant_id: str,
+        relationships: List[Dict[str, Any]],
+        table_name: str = "relationships",
+    ) -> WriteResult:
+        """Writes E3 transaction relationships to the relationships table.
+
+        Args:
+            tenant_id: Tenant ID for row-level security
+            relationships: List of relationship dicts with from_type, from_id, to_type, to_id, state, evidence
+            table_name: Table name (default "relationships")
+
+        Returns:
+            WriteResult with success/failure status.
+        """
+        if not self.enabled:
+            return WriteResult(ok=False, written=0, error=self.error or "Supabase writer is disabled")
+
+        if not relationships:
+            return WriteResult(ok=True, written=0)
+
+        # Enrich relationships with tenant_id and prepare for insert
+        rows = []
+        for rel in relationships:
+            rows.append({
+                "tenant_id": tenant_id,
+                "from_type": rel.get("from_type"),
+                "from_id": rel.get("from_id"),
+                "to_type": rel.get("to_type"),
+                "to_id": rel.get("to_id"),
+                "relationship_state": rel.get("state") or rel.get("relationship_state"),
+                "evidence": rel.get("evidence"),
+            })
+
+        try:
+            self.client.table(table_name).insert(rows).execute()
+        except Exception as exc:  # noqa: BLE001
+            return WriteResult(ok=False, written=0, error=str(exc))
+
+        return WriteResult(ok=True, written=len(rows))
+
     def write_rows(self, rows: List[Dict[str, Any]]) -> WriteResult:
         if not self.enabled:
             return WriteResult(ok=False, written=0, error=self.error or "Supabase writer is disabled")

@@ -1,9 +1,12 @@
 """
 Authentication and authorization utilities for Waterfall Guard.
 Integrates with Supabase Auth for user signup, login, and session management.
+Uses browser localStorage for persistent sessions across page refreshes.
 """
 
 import os
+import json
+import base64
 from typing import Optional, Tuple
 from datetime import datetime, timezone
 import streamlit as st
@@ -24,6 +27,30 @@ def get_auth_client():
         st.stop()
     
     return create_client(supabase_url, anon_key)
+
+
+def save_auth_to_storage(user_data: dict):
+    """Save auth data to browser localStorage via JavaScript."""
+    data_json = json.dumps(user_data)
+    data_b64 = base64.b64encode(data_json.encode()).decode()
+    
+    st.markdown(f"""
+    <script>
+        localStorage.setItem('wg_auth_data', '{data_b64}');
+    </script>
+    """, unsafe_allow_html=True)
+
+
+def load_auth_from_storage():
+    """Load auth data from browser localStorage via JavaScript."""
+    st.markdown("""
+    <script>
+        let authData = localStorage.getItem('wg_auth_data');
+        if (authData) {
+            window.parent.postMessage({type: 'auth_data', data: authData}, '*');
+        }
+    </script>
+    """, unsafe_allow_html=True)
 
 
 def signup_user(email: str, password: str, tenant_id: str, organization_name: str) -> Tuple[bool, str]:
@@ -100,10 +127,24 @@ def login_user(email: str, password: str) -> Tuple[bool, str, Optional[dict]]:
             "password": password,
         })
         
-        if response.user:
+        if response.user and response.session:
             user_id = response.user.id
             
-            # Get user's organization config (anon key only)
+            # Store tokens in session state
+            st.session_state.access_token = response.session.access_token
+            st.session_state.refresh_token = response.session.refresh_token
+            st.session_state.user_id = user_id
+            
+            # Get user's organization config
+            user_data = {
+                "user_id": user_id,
+                "email": email,
+                "tenant_id": None,
+                "organization_name": None,
+                "access_token": response.session.access_token,
+                "refresh_token": response.session.refresh_token
+            }
+            
             try:
                 config_response = client.table("client_configurations").select(
                     "*"
@@ -111,23 +152,15 @@ def login_user(email: str, password: str) -> Tuple[bool, str, Optional[dict]]:
                 
                 if config_response.data:
                     config = config_response.data[0]
-                    return True, "✅ Login successful", {
-                        "user_id": user_id,
-                        "email": email,
-                        "tenant_id": config.get("tenant_id"),
-                        "organization_name": config.get("organization_name"),
-                        "session": response.session.dict() if response.session else None
-                    }
+                    user_data["tenant_id"] = config.get("tenant_id")
+                    user_data["organization_name"] = config.get("organization_name")
             except:
-                # RLS might block, but user is still authenticated
                 pass
             
-            return True, "✅ Login successful", {
-                "user_id": user_id,
-                "email": email,
-                "tenant_id": None,
-                "organization_name": None,
-            }
+            # Save to browser storage
+            save_auth_to_storage(user_data)
+            
+            return True, "✅ Login successful", user_data
         else:
             return False, "❌ Invalid email or password", None
             
@@ -140,6 +173,18 @@ def logout_user() -> bool:
     try:
         client = get_auth_client()
         client.auth.sign_out()
+        
+        # Clear browser storage
+        st.markdown("""
+        <script>
+            localStorage.removeItem('wg_auth_data');
+        </script>
+        """, unsafe_allow_html=True)
+        
+        # Clear session state
+        st.session_state.is_authenticated = False
+        st.session_state.user = None
+        
         return True
     except Exception as e:
         st.error(f"❌ Logout failed: {str(e)}")
@@ -170,3 +215,43 @@ def initialize_session_state():
         st.session_state.user = None
     if "page" not in st.session_state:
         st.session_state.page = "login"  # login, signup, dashboard
+    
+    # Try to restore session from Supabase auth
+    try:
+        client = get_auth_client()
+        
+        # Get the current session from Supabase
+        session = client.auth.get_session()
+        if session and session.user:
+            user_id = session.user.id
+            email = session.user.email
+            access_token = session.access_token
+            refresh_token = session.refresh_token
+            
+            # Get organization config
+            user_data = {
+                "user_id": user_id,
+                "email": email,
+                "tenant_id": None,
+                "organization_name": None,
+                "access_token": access_token,
+                "refresh_token": refresh_token
+            }
+            
+            try:
+                config_response = client.table("client_configurations").select(
+                    "*"
+                ).eq("user_id", user_id).execute()
+                
+                if config_response.data:
+                    config = config_response.data[0]
+                    user_data["tenant_id"] = config.get("tenant_id")
+                    user_data["organization_name"] = config.get("organization_name")
+            except:
+                pass
+            
+            st.session_state.user = user_data
+            st.session_state.is_authenticated = True
+            st.session_state.page = "dashboard"
+    except:
+        pass
