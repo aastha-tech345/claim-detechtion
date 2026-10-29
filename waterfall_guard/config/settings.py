@@ -12,7 +12,9 @@ class Settings:
     epic_token_url: str = os.environ.get("EPIC_TOKEN_URL", "")
     orphan_threshold_days: int = int(os.environ.get("ORPHAN_THRESHOLD_DAYS", "14"))
     supabase_url: str = os.environ.get("SUPABASE_URL", "")
+    supabase_anon_key: str = os.environ.get("SUPABASE_ANON_KEY", "")
     supabase_service_role_key: str = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    supabase_jwt_secret: str = os.environ.get("SUPABASE_JWT_SECRET", "")
 
 
 settings = Settings()

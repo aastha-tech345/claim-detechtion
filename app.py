@@ -8,6 +8,15 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 
+# Disable SSL verification for development (if configured)
+# This must be done BEFORE importing requests/urllib3
+if os.getenv("SSL_VERIFY", "true").lower() == "false":
+    import ssl
+    import urllib3
+    
+    ssl._create_default_https_context = ssl._create_unverified_context
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -26,6 +35,11 @@ from waterfall_guard.auth_session import (
     SessionValidator,
     UserRole,
     AuthenticationError as SessionAuthError,
+)
+from waterfall_guard.exporters import FindingsReportExporter
+from waterfall_guard.session_manager import (
+    SessionManager,
+    require_valid_session,
 )
 
 # ----------------------------------------------------------------------------
@@ -190,21 +204,43 @@ def _authenticate_from_query_params(client) -> None:
 
 _authenticate_from_query_params(get_supabase_client())
 
-if not st.session_state.get("authenticated"):
-    st.markdown(
-        """
-        <div style="display:flex;flex-direction:column;align-items:center;
-                    justify-content:center;height:70vh;gap:1rem;text-align:center;
-                    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-          <p style="font-size:1rem;color:#5b6e6e;">Sign in required to view the OpenClaw dashboard.</p>
-          <a href="/" style="padding:.6rem 1.4rem;border-radius:.5rem;background:#0b6e6a;
-                              color:#fff;text-decoration:none;font-weight:600;">Go to sign in</a>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+# Handle redirect to auth forms when ?page=auth is set
+if st.query_params.get("page") == "auth":
+    st.session_state.show_auth = True
+    st.query_params.clear()
+
+if st.session_state.get("show_auth"):
+    # Show authentication forms instead of dashboard
+    from auth_app import render_login_page, render_signup_page, initialize_session_state as init_auth_session
+    
+    # Initialize auth session
+    if "auth_initialized" not in st.session_state:
+        init_auth_session()
+        st.session_state.auth_initialized = True
+    
+    # Render appropriate form
+    if st.session_state.get("page") == "signup":
+        render_signup_page()
+    else:
+        render_login_page()
     st.stop()
 
+if not st.session_state.get("authenticated"):
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        st.markdown("### Sign in required")
+        st.write("Sign in to view the OpenClaw dashboard.")
+        if st.button("Go to sign in", type="primary", use_container_width=True):
+            # Navigate to landing page (auth_app.py) using query params
+            st.session_state.show_auth = True
+            st.rerun()
+    st.stop()
+
+# Validate session timeout and token expiration
+if not require_valid_session():
+    st.session_state.pop("authenticated", None)
+    st.session_state.pop("user_email", None)
+    st.rerun()
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_claims_data(_client, row_limit: int = 5000) -> pd.DataFrame:
@@ -1058,13 +1094,62 @@ if selected_rows:
 else:
     st.caption("Select a row in the table above to view claim detail.")
 
-csv_bytes = table_df.to_csv(index=False).encode("utf-8")
-st.download_button(
-    "⬇ Export filtered claims as CSV",
-    data=csv_bytes,
-    file_name=f"openclaw_claims_export_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-    mime="text/csv",
-)
+# Export findings reports
+st.markdown("---")
+st.subheader("📊 Export Findings Report")
+
+# Prepare findings data for export
+findings_list = []
+for _, row in detail_df.iterrows():
+    findings_list.append({
+        'token_id': row.get('token_id'),
+        'waterfall_stage': row.get('waterfall_stage'),
+        'deadlock_types': row.get('deadlock_types'),
+        'active_hold_names': row.get('active_hold_names'),
+        'eligible_wq_ids': row.get('eligible_wq_ids'),
+        'unassigned_wq_ids': row.get('unassigned_wq_ids'),
+        'financial_impact': row.get('financial_impact', 0),
+        'filing_deadline': row.get('filing_deadline'),
+        'created_at': row.get('created_at'),
+    })
+
+# Create exporter
+exporter = FindingsReportExporter(findings_list)
+
+export_col1, export_col2, export_col3 = st.columns(3)
+
+with export_col1:
+    csv_bytes = exporter.to_csv()
+    st.download_button(
+        "📋 CSV Report",
+        data=csv_bytes,
+        file_name=exporter.get_filename('csv'),
+        mime="text/csv",
+        help="Export findings as CSV for spreadsheet analysis"
+    )
+
+with export_col2:
+    try:
+        pdf_bytes = exporter.to_pdf()
+        st.download_button(
+            "📄 PDF Report",
+            data=pdf_bytes,
+            file_name=exporter.get_filename('pdf'),
+            mime="application/pdf",
+            help="Export findings as formatted PDF report"
+        )
+    except ImportError:
+        st.warning("⚠️ PDF export requires reportlab. Install with: `pip install reportlab`")
+
+with export_col3:
+    csv_bytes = table_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "📊 Claims CSV",
+        data=csv_bytes,
+        file_name=f"openclaw_claims_export_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv",
+        help="Export filtered claims table as CSV"
+    )
 
 # ----------------------------------------------------------------------------
 # Row 5 — Post resolution to Epic

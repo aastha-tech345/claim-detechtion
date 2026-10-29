@@ -7,18 +7,105 @@ values from the authenticated session.
 CRITICAL: Do NOT trust user-entered form fields for identity or authorization.
 Always derive user_id, role, and tenant_id from st.session_state which is
 populated by the authentication app (auth_app.py) after successful login.
+
+JWT Validation: Validates JWT tokens issued by Supabase Auth, including:
+- Signature verification (structure validation)
+- Expiration check (exp claim)
+- Required claims (standard JWT claims)
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Any, Dict, Optional
 
+import jwt
 import streamlit as st
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_jwt_token(access_token: str, jwt_secret: Optional[str] = None) -> Dict[str, Any]:
+    """Validate JWT token and extract claims.
+    
+    Validates:
+    - Token structure (valid JWT format: 3 segments)
+    - Token signature using Supabase JWT secret (cryptographic verification)
+    - Expiration (exp claim in future)
+    - Required claims (standard JWT structure)
+    
+    Args:
+        access_token: JWT token to validate
+        jwt_secret: JWT secret for signature verification (optional, falls back to settings)
+        
+    Returns:
+        Decoded token claims
+        
+    Raises:
+        AuthenticationError: If token is invalid, expired, malformed, or has invalid signature
+    """
+    from waterfall_guard.config.settings import settings
+    
+    try:
+        # Get JWT secret from parameter or settings
+        secret = jwt_secret if jwt_secret else settings.supabase_jwt_secret
+        
+        if not secret:
+            # If no secret configured, fall back to structure-only validation
+            # This allows development/testing without Supabase but logs warning
+            import logging
+            logging.warning(
+                "JWT secret not configured (SUPABASE_JWT_SECRET env var). "
+                "Signature verification disabled - this is not secure for production. "
+                "Set SUPABASE_JWT_SECRET from Supabase project settings."
+            )
+            # Structure-only validation (development mode)
+            decoded = jwt.decode(
+                access_token,
+                options={"verify_signature": False}
+            )
+        else:
+            # Production mode: verify JWT signature with Supabase secret
+            decoded = jwt.decode(
+                access_token,
+                secret,
+                algorithms=["HS256"],  # Supabase Auth uses HS256
+                options={"verify_signature": True}  # ✅ SIGNATURE VERIFICATION ENABLED
+            )
+        
+        # Check expiration claim
+        if "exp" in decoded:
+            now = datetime.now(timezone.utc).timestamp()
+            if now > decoded["exp"]:
+                raise AuthenticationError(
+                    "Access token has expired. Please log in again."
+                )
+        
+        # Validate required claims
+        required_claims = ["sub", "exp"]  # sub = subject (user ID), exp = expiration
+        for claim in required_claims:
+            if claim not in decoded:
+                raise AuthenticationError(
+                    f"Token missing required claim: {claim}"
+                )
+        
+        return decoded
+        
+    except jwt.DecodeError as e:
+        raise AuthenticationError(f"Invalid token format: {e}")
+    except jwt.InvalidSignatureError as e:
+        raise AuthenticationError(f"Token signature verification failed: {e}")
+    except jwt.InvalidTokenError as e:
+        raise AuthenticationError(f"Token validation failed: {e}")
+    except Exception as e:
+        if isinstance(e, AuthenticationError):
+            raise
+        raise AuthenticationError(f"Unexpected error validating token: {e}")
+
 
 
 class UserRole(str, Enum):
@@ -94,6 +181,14 @@ class SessionValidator:
                 if field not in user_data or not user_data[field]:
                     raise AuthenticationError(f"Missing required field: {field}")
 
+            # Validate JWT token (Blocker #1 fix)
+            access_token = user_data["access_token"]
+            try:
+                _validate_jwt_token(access_token)
+            except AuthenticationError as e:
+                # Token is invalid or expired, raise authentication error
+                raise AuthenticationError(f"Token validation failed: {str(e)}")
+
             # Derive role from session (default to ANALYST if not set)
             # In production, role would be stored in a user_roles table
             role_str = user_data.get("role", "analyst").lower()
@@ -109,12 +204,14 @@ class SessionValidator:
                 tenant_id=user_data["tenant_id"],
                 organization_name=user_data.get("organization_name", ""),
                 role=role,
-                access_token=user_data["access_token"],
+                access_token=access_token,
             )
 
         except KeyError as e:
             raise AuthenticationError(f"Malformed session: {e}")
         except Exception as e:
+            if isinstance(e, AuthenticationError):
+                raise
             raise AuthenticationError(f"Session validation failed: {e}")
 
     @staticmethod

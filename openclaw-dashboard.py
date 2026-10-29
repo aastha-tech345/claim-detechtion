@@ -2,6 +2,15 @@ import html
 import os
 from datetime import datetime, timezone
 
+# Disable SSL verification for development (if configured)
+# This must be done BEFORE importing requests/urllib3
+if os.getenv("SSL_VERIFY", "true").lower() == "false":
+    import ssl
+    import urllib3
+    
+    ssl._create_default_https_context = ssl._create_unverified_context
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -102,19 +111,36 @@ def get_filing_deadline_alert_days() -> int:
 client = get_supabase_client()
 _authenticate_from_query_params(client)
 
+# Handle redirect to auth forms when ?page=auth is set
+if st.query_params.get("page") == "auth":
+    st.session_state.show_auth = True
+    st.query_params.clear()
+
+if st.session_state.get("show_auth"):
+    # Show authentication forms instead of dashboard
+    from auth_app import render_login_page, render_signup_page, initialize_session_state as init_auth_session
+    
+    # Initialize auth session
+    if "auth_initialized" not in st.session_state:
+        init_auth_session()
+        st.session_state.auth_initialized = True
+    
+    # Render appropriate form
+    if st.session_state.get("page") == "signup":
+        render_signup_page()
+    else:
+        render_login_page()
+    st.stop()
+
 if not st.session_state.get("authenticated"):
-    st.markdown(
-        """
-        <div style="display:flex;flex-direction:column;align-items:center;
-                    justify-content:center;height:70vh;gap:1rem;text-align:center;
-                    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-          <p style="font-size:1rem;color:#5b6e6e;">Sign in required to view the Open Claw dashboard.</p>
-          <a href="/" style="padding:.6rem 1.4rem;border-radius:.5rem;background:#0b6e6a;
-                              color:#fff;text-decoration:none;font-weight:600;">Go to sign in</a>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        st.markdown("### Sign in required")
+        st.write("Sign in to view the OpenClaw dashboard.")
+        if st.button("Go to sign in", type="primary", use_container_width=True):
+            # Show authentication forms
+            st.session_state.show_auth = True
+            st.rerun()
     st.stop()
 
 with st.sidebar:

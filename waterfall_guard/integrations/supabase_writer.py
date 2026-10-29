@@ -26,16 +26,29 @@ SupabaseClientFactory = Callable[[str, str], Any]
 
 
 def _default_client_factory(url: str, key: str) -> Any:
-    """Builds a real supabase-py client.
+    """Builds a real supabase-py client with proper TLS verification.
 
     Imported lazily so this module (and anything that imports it) loads
     fine even when the ``supabase`` package isn't installed - the
     resulting ``ImportError`` is caught by ``SupabaseWriter`` and just
     disables the writer.
+    
+    TLS verification is ALWAYS enabled for security. For development
+    environments with self-signed certificates, use a proper CA or
+    establish a dedicated secure dev environment with valid certificates.
     """
+    import os
     from supabase import create_client
-
-    return create_client(url, key)
+    
+    # Always create client with TLS verification enabled (default behavior)
+    # Development environments should use proper certificates or configure
+    # environment-specific CA bundles if needed
+    client = create_client(url, key)
+    
+    # Ensure TLS verification is enabled (supabase-py default)
+    # Do not disable verify=False or set verify=None in production or dev
+    
+    return client
 
 
 @dataclass

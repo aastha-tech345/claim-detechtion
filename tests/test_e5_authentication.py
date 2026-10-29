@@ -13,6 +13,7 @@ from waterfall_guard.auth_session import (
     AuthenticationError,
     UserRole,
 )
+from .jwt_test_helper import create_valid_jwt_token
 
 
 class TestAuthenticationState(unittest.TestCase):
@@ -55,7 +56,7 @@ class TestUserContextDerivation(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "user@example.com",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
             },
         }
 
@@ -71,7 +72,7 @@ class TestUserContextDerivation(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "verified@supabase.auth",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
             },
         }
 
@@ -87,7 +88,7 @@ class TestUserContextDerivation(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "user@example.com",
                 "tenant_id": "tenant_organization_123",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
             },
         }
 
@@ -148,6 +149,7 @@ class TestUserContextDerivation(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "user@example.com",
                 "tenant_id": "tenant_abc",
+                # No access_token
             },
         }
 
@@ -167,7 +169,7 @@ class TestRoleDerivation(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "user@example.com",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
                 # No role specified
             },
         }
@@ -184,7 +186,7 @@ class TestRoleDerivation(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "user@example.com",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
                 "role": "supervisor",
             },
         }
@@ -201,7 +203,7 @@ class TestRoleDerivation(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "user@example.com",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
                 "role": "admin",
             },
         }
@@ -218,7 +220,7 @@ class TestRoleDerivation(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "user@example.com",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
                 "role": "SUPERVISOR",  # Uppercase
             },
         }
@@ -235,7 +237,7 @@ class TestRoleDerivation(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "user@example.com",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
                 "role": "invalid_role",
             },
         }
@@ -256,7 +258,7 @@ class TestRoleHierarchyAndAuthorization(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "sup@example.com",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
                 "role": "supervisor",
             },
         }
@@ -273,7 +275,7 @@ class TestRoleHierarchyAndAuthorization(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "admin@example.com",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
                 "role": "admin",
             },
         }
@@ -290,7 +292,7 @@ class TestRoleHierarchyAndAuthorization(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "analyst@example.com",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
                 "role": "analyst",
             },
         }
@@ -308,7 +310,7 @@ class TestRoleHierarchyAndAuthorization(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "sup@example.com",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
                 "role": "supervisor",
             },
         }
@@ -326,7 +328,7 @@ class TestRoleHierarchyAndAuthorization(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "analyst@example.com",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
                 "role": "analyst",
             },
         }
@@ -347,7 +349,7 @@ class TestTenantIsolation(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "user@example.com",
                 "tenant_id": "tenant_org_x",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
             },
         }
 
@@ -375,7 +377,7 @@ class TestTenantIsolation(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "user@example.com",
                 "tenant_id": "tenant_org_y",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
             },
         }
 
@@ -414,7 +416,7 @@ class TestSecurityBoundaries(unittest.TestCase):
                 "user_id": "session_uuid_correct",
                 "email": "user@example.com",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="session_uuid_correct"),
             },
         }
 
@@ -431,7 +433,7 @@ class TestSecurityBoundaries(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "user@example.com",
                 "tenant_id": "correct_tenant_from_session",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
             },
         }
 
@@ -448,7 +450,7 @@ class TestSecurityBoundaries(unittest.TestCase):
                 "user_id": "uuid-12345",
                 "email": "user@example.com",
                 "tenant_id": "tenant_abc",
-                "access_token": "token_xyz",
+                "access_token": create_valid_jwt_token(user_id="uuid-12345"),
                 "role": "admin",  # From session after DB lookup, not form
             },
         }

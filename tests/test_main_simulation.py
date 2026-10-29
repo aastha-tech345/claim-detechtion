@@ -77,25 +77,35 @@ def test_run_diagnostic_pipeline_soft_fails_when_supabase_is_unconfigured():
 
 
 def test_run_diagnostic_pipeline_persists_findings_when_supabase_is_configured():
-    written_rows = []
+    written_rows_by_table = {}
 
     class FakeTable:
+        def __init__(self, table_name):
+            self.table_name = table_name
+            if table_name not in written_rows_by_table:
+                written_rows_by_table[table_name] = []
+            self.rows = written_rows_by_table[table_name]
+
         def insert(self, rows):
-            written_rows.extend(rows)
+            self.rows.extend(rows)
             return self
 
         def execute(self):
-            return {"data": written_rows}
+            return {"data": self.rows}
 
     class FakeClient:
         def table(self, name):
-            return FakeTable()
+            return FakeTable(name)
 
     writer = SupabaseWriter(url="https://proj.supabase.co", key="secret", client=FakeClient())
     result = run_diagnostic_pipeline(supabase_writer=writer)
 
     assert result["supabase_write_ok"] is True
-    assert len(written_rows) == result["diagnostic_payload"]["finding_count"]
+    # Now we write both findings and relationships
+    # The "claim_diagnostics" table should have finding_count rows
+    # The "relationships" table should have relationship rows
+    assert len(written_rows_by_table.get("claim_diagnostics", [])) == result["diagnostic_payload"]["finding_count"]
+    assert len(written_rows_by_table.get("relationships", [])) > 0  # E3 relationships should be written
 
 
 def test_missing_live_env_vars_lists_every_unset_setting(monkeypatch):

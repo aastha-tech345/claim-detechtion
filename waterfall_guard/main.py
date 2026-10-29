@@ -105,41 +105,93 @@ def run_simulation() -> Dict[str, Any]:
     deidentified_records = deidentifier.deidentify_batch(RAW_CLAIMS)
     engine_records = [record.as_dict() for record in deidentified_records]
 
-    # E3: Extract relationships from raw claims
+    # E3: Extract relationships from deidentified claims (preserves de-identification)
     matcher = RelationshipMatcher()
-    relationships = matcher.extract_batch(RAW_CLAIMS)
+    relationships = matcher.extract_batch(engine_records)
 
     findings = engine.diagnose_batch(engine_records)
     
-    # E4: Detect missing successors
-    successor_matcher = SuccessorMatcher()
-    successor_findings = []
+    # E4: Detect missing successors, delayed transitions, and actionability
+    # Pass all claims to SuccessorMatcher so it can resolve relationship targets
+    successor_matcher = SuccessorMatcher(all_claims=engine_records)
+    missing_successor_findings = []
+    delayed_successor_findings = []
+    actionability_findings = []
+    
     for record in engine_records:
-        # Convert record to claim-like dict for successor detection
-        # Note: field names must match SuccessorMatcher expectations
+        # Build claim dict for E4 analysis
+        # Include relationships from E3 extraction
         claim = {
             "token_id": record.get("token_id"),
             "status": record.get("status") or record.get("claim_status") or record.get("waterfall_stage"),
             "last_status_change_at": record.get("last_status_change_at") or record.get("created_date"),
             "acknowledgment_date": record.get("acknowledgment_date"),
             "filing_deadline": record.get("filing_deadline"),
+            "expected_response_by": record.get("expected_response_by"),
+            "relationships": record.get("relationships", []),  # From E3
         }
+        
+        # E4.1: Check for missing successors (orphan claims)
         missing = successor_matcher.check_missing_successors(claim)
-        successor_findings.extend(missing)
+        missing_successor_findings.extend(missing)
+        
+        # E4.2: Check for delayed successors
+        delayed_reason = successor_matcher.classify_delayed_successor(claim)
+        if delayed_reason:
+            delayed_successor_findings.append({
+                "token_id": claim.get("token_id"),
+                "reason": delayed_reason,
+                "status": claim.get("status"),
+            })
+        
+        # E4.3: Classify actionability (before filing deadline)
+        actionability = successor_matcher.classify_actionability(claim)
+        actionability_findings.append({
+            "token_id": actionability.token_id,
+            "state": actionability.state.value if hasattr(actionability.state, 'value') else str(actionability.state),
+            "filing_deadline": actionability.filing_deadline.isoformat() if actionability.filing_deadline else None,
+            "days_until_deadline": actionability.days_until_deadline,
+            "reason": actionability.reason,
+        })
 
     payload = engine.build_zdr_payload(findings)
     
-    # Include successor findings in the payload
-    payload["successor_findings"] = [
-        {
-            "token_id": f.token_id,
-            "finding_type": f.finding_type.value,
-            "reason": f.reason,
+    # E4: Include all successor findings in the payload
+    payload["successor_findings"] = {
+        "missing_successors": [
+            {
+                "token_id": f.token_id,
+                "current_status": f.current_status.value if hasattr(f.current_status, 'value') else str(f.current_status),
+                "expected_status": f.expected_status.value if hasattr(f.expected_status, 'value') else str(f.expected_status),
+                "expected_days": f.expected_days,
+                "days_since_transition": f.days_since_transition,
+                "reason": f.reason,
+                "severity": "high" if f.days_since_transition > (f.expected_days * 2) else "medium",
+            }
+            for f in missing_successor_findings
+        ],
+        "delayed_successors": delayed_successor_findings,
+        "actionability": actionability_findings,
+        "summary": {
+            "total_missing_successors": len(missing_successor_findings),
+            "total_delayed_successors": len(delayed_successor_findings),
+            "claims_requiring_action": sum(
+                1 for f in actionability_findings 
+                if f["state"] in ["actionable", "escalation_required"]
+            ),
+            "claims_expired": sum(
+                1 for f in actionability_findings 
+                if f["state"] == "expired"
+            ),
+            "claims_unknown_deadline": sum(
+                1 for f in actionability_findings 
+                if f["state"] == "unknown"
+            ),
         }
-        for f in successor_findings
-    ]
+    }
     
-    # Store relationships in payload for persistence
+    # E3: Store relationships in payload for persistence
+    # Includes ACCEPTED, REJECTED, UNRESOLVED for audit trail
     payload["relationships"] = [
         {
             "from_type": r.from_type,
@@ -159,6 +211,18 @@ def run_simulation() -> Dict[str, Any]:
         }
         for r in relationships
     ]
+    
+    # E3: Relationship statistics
+    relationship_states = {}
+    for r in relationships:
+        state = r.state.value if hasattr(r.state, 'value') else str(r.state)
+        relationship_states[state] = relationship_states.get(state, 0) + 1
+    
+    payload["relationship_summary"] = {
+        "total_relationships": len(relationships),
+        "by_state": relationship_states,
+        "quarantined_count": relationship_states.get("unresolved", 0),
+    }
     
     return payload
 

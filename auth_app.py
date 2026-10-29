@@ -9,6 +9,15 @@ from dotenv import load_dotenv
 # Load .env file at the very beginning - BEFORE other imports
 load_dotenv()
 
+# Disable SSL verification for development (if configured)
+# This must be done BEFORE importing requests/urllib3
+if os.getenv("SSL_VERIFY", "true").lower() == "false":
+    import ssl
+    import urllib3
+    
+    ssl._create_default_https_context = ssl._create_unverified_context
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -28,6 +37,10 @@ from waterfall_guard.auth import (
     is_user_authenticated,
     get_auth_client,
 )
+from waterfall_guard.session_manager import (
+    SessionManager,
+    require_valid_session,
+)
 
 # Page config
 st.set_page_config(
@@ -37,8 +50,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Initialize session
-initialize_session_state()
+# Initialize session (only on first load)
+if "initialized" not in st.session_state:
+    initialize_session_state()
+    st.session_state.initialized = True
 
 # Custom CSS
 st.markdown("""
@@ -208,6 +223,8 @@ def render_login_page():
                         st.session_state.is_authenticated = True
                         st.session_state.user = user_data
                         st.session_state.page = "dashboard"
+                        # Initialize session tracking on successful login
+                        SessionManager._initialize_session_tracking()
                         st.success(message)
                         st.rerun()
                     else:
@@ -283,6 +300,12 @@ def render_signup_page():
 
 def render_dashboard():
     """Render main dashboard after login."""
+    
+    # Validate session and check for timeout
+    if not require_valid_session():
+        st.session_state.page = "login"
+        st.rerun()
+    
     user = get_current_user()
     
     # Sidebar with user info
@@ -440,6 +463,11 @@ def render_dashboard():
 
 def main():
     """Main app entry point."""
+    
+    # Handle redirect from dashboard with ?page=auth query param
+    if st.query_params.get("page") == "auth":
+        st.session_state.page = "login"
+        st.query_params.clear()
     
     if is_user_authenticated():
         render_dashboard()

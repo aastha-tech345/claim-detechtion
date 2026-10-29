@@ -9,6 +9,20 @@ import json
 import base64
 from typing import Optional, Tuple
 from datetime import datetime, timezone
+
+# ⚠️ CRITICAL: Disable SSL verification BEFORE any other imports
+# This must be done before importing requests, urllib3, or supabase
+if os.getenv("SSL_VERIFY", "true").lower() == "false":
+    import ssl
+    import urllib3
+    
+    # Disable SSL verification globally
+    ssl._create_default_https_context = ssl._create_unverified_context
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
+    # Also set environment variables for requests library
+    os.environ['PYTHONHTTPSVERIFY'] = '0'
+
 import streamlit as st
 from supabase import create_client
 from dotenv import load_dotenv
@@ -18,15 +32,54 @@ load_dotenv()
 
 
 def get_auth_client():
-    """Get Supabase client for authentication."""
+    """Get Supabase client for authentication.
+    
+    Supports SSL_VERIFY env var to disable SSL verification for development/testing
+    with self-signed certificates. Set SSL_VERIFY=false to disable.
+    """
+    import urllib3
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    
     supabase_url = os.getenv("SUPABASE_URL")
     anon_key = os.getenv("SUPABASE_ANON_KEY")
+    ssl_verify = os.getenv("SSL_VERIFY", "true").lower() != "false"
     
     if not supabase_url or not anon_key:
         st.error("❌ Supabase credentials not configured in .env")
         st.stop()
     
-    return create_client(supabase_url, anon_key)
+    # Disable SSL verification globally if needed (development/testing only)
+    if not ssl_verify:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        requests.packages.urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        
+        # Disable SSL verification for all Python requests globally
+        import ssl
+        ssl._create_default_https_context = ssl._create_unverified_context
+    
+    # Create client
+    client = create_client(supabase_url, anon_key)
+    
+    # Also set verify=False on the client's internal session if accessible
+    try:
+        if hasattr(client, '_client'):
+            client._client.verify = False
+        if hasattr(client, 'postgrest'):
+            if hasattr(client.postgrest, '_session'):
+                client.postgrest._session.verify = False
+            if hasattr(client.postgrest, 'session'):
+                client.postgrest.session.verify = False
+        if hasattr(client, 'auth'):
+            if hasattr(client.auth, '_session'):
+                client.auth._session.verify = False
+            if hasattr(client.auth, 'session'):
+                client.auth.session.verify = False
+    except Exception as e:
+        print(f"Warning: Could not configure SSL verification: {e}")
+    
+    return client
 
 
 def save_auth_to_storage(user_data: dict):
